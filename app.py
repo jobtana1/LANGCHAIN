@@ -123,19 +123,22 @@ api_key = st.secrets["ANTHROPIC_API_KEY"]
 if "llm" not in st.session_state:
     st.session_state.llm = ChatAnthropic(
         anthropic_api_key=api_key,
-        model="claude-3-7-sonnet-20240229",
+        model="claude-3-7-sonnet-20250219",
         temperature=0.7,
         max_tokens=100000  # Using a much higher token limit for context windows
     )
 
 # Set up conversation
 if "conversation" not in st.session_state:
-    memory = ConversationBufferMemory()
-    st.session_state.conversation = ConversationChain(
-        llm=st.session_state.llm, 
-        memory=memory
-    )
-
+    try:
+        memory = ConversationBufferMemory()
+        st.session_state.conversation = ConversationChain(
+            llm=st.session_state.llm, 
+            memory=memory,
+            verbose=True  # Add this for debugging
+        )
+    except Exception as e:
+        st.error(f"Error initializing conversation: {str(e)}")
 # Initialize state
 if "conversation_id" not in st.session_state:
     st.session_state.conversation_id = str(uuid.uuid4())
@@ -164,25 +167,27 @@ if page == "Chat":
         with st.chat_message(message["role"]):
             st.write(message["content"])
     
-    # Chat input
-    prompt = st.chat_input("Ask something...")
-    if prompt:
-        # Display user message
-        st.session_state.messages.append({"role": "human", "content": prompt})
-        with st.chat_message("human"):
-            st.write(prompt)
-        
-        # Get and display AI response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+# Chat input
+prompt = st.chat_input("Ask something...")
+if prompt:
+    # Display user message
+    st.session_state.messages.append({"role": "human", "content": prompt})
+    with st.chat_message("human"):
+        st.write(prompt)
+    
+    # Get and display AI response
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
                 response = st.session_state.conversation.predict(input=prompt)
                 st.write(response)
-        
-        # Save AI message
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Auto-save
-        save_conversation(st.session_state.conversation_id, st.session_state.messages)
+                # Save AI message
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                # Auto-save
+                save_conversation(st.session_state.conversation_id, st.session_state.messages)
+            except Exception as e:
+                error_msg = f"Error: {str(e)}"
+                st.error(error_msg)
 
 # History page
 elif page == "History":
