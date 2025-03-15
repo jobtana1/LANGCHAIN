@@ -121,11 +121,12 @@ api_key = st.secrets["ANTHROPIC_API_KEY"]
 
 # Initialize chat model
 if "llm" not in st.session_state:
-    st.session_state.llm = ChatAnthropic(
-        anthropic_api_key=api_key,
-        model="claude-3-7-sonnet-20250219",
-        temperature=0.7,
-        max_tokens=100000  # Using a much higher token limit for context windows
+st.session_state.llm = ChatAnthropic(
+    anthropic_api_key=api_key,
+    model="claude-3-7-sonnet-20250219",
+    temperature=0.7,
+    max_tokens=32000  # Reduced to a safe value
+)
     )
 
 # Set up conversation
