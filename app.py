@@ -24,3 +24,32 @@ conversation_chain = ConversationChain(
     llm=llm,
     memory=conversation_memory
 )
+# Page Config
+st.set_page_config(page_title="Claude Assistant", layout="wide")
+
+# Initialize state
+def initialize_conversation_state():
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = str(uuid.uuid4())
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    if "chain" not in st.session_state:
+        st.session_state.chain = conversation_chain
+
+# Init state
+initialize_conversation_state()
+
+# Export function
+def export_conversation():
+    conversation_data = {
+        "conversation_id": st.session_state.conversation_id,
+        "messages": st.session_state.messages,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    os.makedirs("exports", exist_ok=True)
+    filename = f"exports/conversation_{st.session_state.conversation_id}.json"
+    with open(filename, "w") as f:
+        json.dump(conversation_data, f, indent=2)
+    return filename
