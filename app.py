@@ -12,8 +12,8 @@ anthropic_api_key = st.secrets["ANTHROPIC_API_KEY"]
 
 # Initialize Anthropic Chat Model
 llm = ChatAnthropic(
-    api_key=anthropic_api_key,
-    model="claude-3-7-sonnet-20250219",  # Use a specific Claude model (check Anthropic docs for latest)
+    api_key=anthropic_api_key,  # Use api_key as per Anthropic SDK convention
+    model="claude-3-sonnet-20240229",  # Use a known model name (verify with Anthropic docs)
     temperature=0.7
 )
 
