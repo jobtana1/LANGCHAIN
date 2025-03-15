@@ -23,7 +23,7 @@ def get_db_connection():
         updated_at TIMESTAMP,
         model TEXT
     )
-    ''')
+    
     
     conn.execute('''
     CREATE TABLE IF NOT EXISTS messages (
