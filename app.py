@@ -1,6 +1,6 @@
 import streamlit as st
 import uuid
-from langchain.llms import Anthropic
+from langchain_anthropic import ChatAnthropic
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 import json
@@ -10,10 +10,10 @@ import os
 # Retrieve API Key from Streamlit Secrets
 anthropic_api_key = st.secrets["ANTHROPIC_API_KEY"]
 
-# Initialize Anthropic Language Model
-llm = Anthropic(
-    anthropic_api_key=anthropic_api_key,
-    model="claude-v1",  # Adjust model version if needed
+# Initialize Anthropic Chat Model
+llm = ChatAnthropic(
+    api_key=anthropic_api_key,
+    model="claude-3-7-sonnet-20250219",  # Use a specific Claude model (check Anthropic docs for latest)
     temperature=0.7
 )
 
@@ -96,5 +96,5 @@ if prompt:
             response = st.session_state.chain.invoke({"input": prompt})
             st.write(response["response"])
     
-    # Add AI response to session state (corrected syntax)
+    # Add AI response to session state
     st.session_state.messages.append({"role": "assistant", "content": response["response"]})
