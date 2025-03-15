@@ -1,282 +1,509 @@
+cat > app.py << 'EOF'
+# superagi_gui.py
 import streamlit as st
 import os
-import uuid
-from datetime import datetime
-import sqlite3
 import json
-import pandas as pd
-from langchain_anthropic import ChatAnthropic
-from langchain.chains import ConversationChain
-from langchain.memory import ConversationBufferMemory
+import time
+import threading
+import subprocess
+import psutil
+import base64
+from datetime import datetime
+from typing import List, Dict, Any, Optional
 
-# Database functions
-def get_db_connection():
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect('data/conversations.db')
-    conn.row_factory = sqlite3.Row
-    
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS conversations (
-        conversation_id TEXT PRIMARY KEY,
-        title TEXT,
-        created_at TIMESTAMP,
-        updated_at TIMESTAMP,
-        model TEXT
-    )
-    ''')
-    
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS messages (
-        message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        conversation_id TEXT,
-        role TEXT,
-        content TEXT,
-        timestamp TIMESTAMP,
-        FOREIGN KEY (conversation_id) REFERENCES conversations (conversation_id)
-    )
-    ''')
-    
-    conn.commit()
-    return conn
+# Import your SUPER AGI system
+# Assuming your system is in goal_oriented_agents.py
+from goal_oriented_agents import (
+    Goal, Agent, AgentRole, AgentCoordinator, 
+    LLMBackwardChainer, ExecutionResult,
+    WebSearchTool, FileReaderTool, APIRequestTool
+)
 
-def save_conversation(conversation_id, messages, title=None):
-    conn = get_db_connection()
-    now = datetime.now().isoformat()
-    
-    existing = conn.execute(
-        "SELECT * FROM conversations WHERE conversation_id = ?", 
-        (conversation_id,)
-    ).fetchone()
-    
-    if not existing:
-        if not title:
-            first_message = messages[0]["content"] if messages else "New Conversation"
-            title = first_message[:50] + "..." if len(first_message) > 50 else first_message
-            
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, title, created_at, updated_at, model) VALUES (?, ?, ?, ?, ?)",
-            (conversation_id, title, now, now, "Claude 3.7 Sonnet")
+# Initialize session state
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = False
+    st.session_state.goals = []
+    st.session_state.agents = []
+    st.session_state.coordinator = None
+    st.session_state.results = {}
+    st.session_state.log_messages = []
+    st.session_state.processing = False
+    st.session_state.process_pid = None
+    st.session_state.start_time = None
+    st.session_state.thinking = False
+
+# Function to add a log message
+def add_log(message: str):
+    timestamp = time.strftime("%H:%M:%S")
+    st.session_state.log_messages.append(f"[{timestamp}] {message}")
+
+# Function to initialize the system
+def initialize_system():
+    if st.session_state.initialized:
+        return
+
+    add_log("Initializing SUPER AGI system...")
+
+    # Create tools
+    web_search_tool = WebSearchTool()
+    file_reader_tool = FileReaderTool()
+    api_request_tool = APIRequestTool()
+
+    # Create agents with different roles
+    agents = [
+        Agent(
+            name="Dr. Genetica",
+            role=AgentRole.GENETICIST,
+            capabilities=["genetic analysis", "genomic sequencing", "mutation identification"],
+            tools=[web_search_tool, api_request_tool]
+        ),
+        Agent(
+            name="Dr. Therapo",
+            role=AgentRole.MEDICAL_EXPERT,
+            capabilities=["drug development", "treatment protocols", "medical research"],
+            tools=[web_search_tool, file_reader_tool]
+        ),
+        Agent(
+            name="Dr. Testo",
+            role=AgentRole.CLINICIAN,
+            capabilities=["clinical trials", "patient assessment", "treatment validation"],
+            tools=[api_request_tool]
+        ),
+        Agent(
+            name="Research Master",
+            role=AgentRole.RESEARCHER,
+            capabilities=["literature review", "data analysis", "hypothesis generation"],
+            tools=[web_search_tool, file_reader_tool, api_request_tool]
         )
+    ]
+
+    # Create coordinator
+    coordinator = AgentCoordinator()
+
+    # Add agents to coordinator
+    for agent in agents:
+        coordinator.add_agent(agent)
+
+    # Store in session state
+    st.session_state.agents = agents
+    st.session_state.coordinator = coordinator
+    st.session_state.initialized = True
+
+    add_log("System initialized with 4 agents and their tools")
+
+# Function to kill running processes
+def kill_process():
+    if st.session_state.process_pid:
+        try:
+            # Try to kill the process
+            process = psutil.Process(st.session_state.process_pid)
+            for proc in process.children(recursive=True):
+                proc.kill()
+            process.kill()
+            add_log(f"Process {st.session_state.process_pid} terminated")
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            add_log("Process already terminated")
+
+        # Reset process state
+        st.session_state.process_pid = None
+        st.session_state.processing = False
+        st.session_state.thinking = False
+        st.session_state.start_time = None
+
+        return "Process terminated"
     else:
-        conn.execute(
-            "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
-            (now, conversation_id)
-        )
-    
-    conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
-    
-    for msg in messages:
-        conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            (conversation_id, msg["role"], msg["content"], now)
-        )
-    
-    conn.commit()
-    conn.close()
+        return "No active process to terminate"
 
-def get_conversations():
-    conn = get_db_connection()
-    conversations = conn.execute(
-        "SELECT * FROM conversations ORDER BY updated_at DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(c) for c in conversations]
+# Function to process a goal
+def process_goal(goal_description: str, knowledge_base: Dict[str, List[str]]):
+    if not st.session_state.initialized:
+        initialize_system()
 
-def get_messages(conversation_id):
-    conn = get_db_connection()
-    messages = conn.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_id",
-        (conversation_id,)
-    ).fetchall()
-    conn.close()
-    return [dict(m) for m in messages]
+    st.session_state.processing = True
+    st.session_state.thinking = True
+    st.session_state.start_time = datetime.now()
+    add_log(f"Processing goal: {goal_description}")
 
-def search_conversations(query):
-    conn = get_db_connection()
-    
-    results = conn.execute(
-        """
-        SELECT c.conversation_id, c.title, c.updated_at, m.content
-        FROM conversations c
-        JOIN messages m ON c.conversation_id = m.conversation_id
-        WHERE m.content LIKE ?
-        GROUP BY c.conversation_id
-        ORDER BY c.updated_at DESC
-        """,
-        (f"%{query}%",)
-    ).fetchall()
-    
-    conn.close()
-    return [dict(r) for r in results]
+    # Create main goal
+    main_goal = Goal(
+        description=goal_description,
+        priority=5
+    )
+
+    # Create backward chainer
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        add_log("Error: No OpenAI API key found. Please set it in your environment.")
+        st.session_state.processing = False
+        st.session_state.thinking = False
+        return
+
+    chainer = LLMBackwardChainer(api_key)
+
+    # Run in a separate thread to not block the UI
+    def background_processing():
+        try:
+            # Start a process for this task
+            process = psutil.Process(os.getpid())
+            st.session_state.process_pid = process.pid
+
+            # Decompose the goal
+            add_log("Decomposing goal into sub-goals...")
+            sub_goals = chainer.decompose_goal(main_goal, knowledge_base)
+
+            # Signal that thinking phase is complete
+            st.session_state.thinking = False
+
+            # Add goals to coordinator
+            st.session_state.coordinator.add_goal(main_goal)
+            for sub_goal in sub_goals:
+                st.session_state.coordinator.add_goal(sub_goal)
+
+            # Store goals in session state
+            st.session_state.goals = [main_goal] + sub_goals
+
+            # Assign goals to agents
+            add_log("Assigning goals to specialized agents...")
+            st.session_state.coordinator.assign_goals_to_agents()
+
+            # Execute goals
+            add_log("Executing goals with specialized agents...")
+            st.session_state.coordinator.execute_all_goals()
+
+            # Store results
+            for goal in [main_goal] + sub_goals:
+                result = goal.get_latest_result()
+                if result:
+                    st.session_state.results[goal.id] = {
+                        "description": goal.description,
+                        "status": goal.status.value,
+                        "agent": goal.assigned_agent.name if goal.assigned_agent else "None",
+                        "success": result.success,
+                        "message": result.message,
+                        "data": result.data
+                    }
+
+            add_log("Goal processing complete!")
+        except Exception as e:
+            add_log(f"Error processing goal: {str(e)}")
+        finally:
+            st.session_state.processing = False
+            st.session_state.process_pid = None
+
+    # Start background thread
+    threading.Thread(target=background_processing).start()
+
+# Function to get elapsed time
+def get_elapsed_time():
+    if st.session_state.start_time:
+        elapsed = datetime.now() - st.session_state.start_time
+        minutes, seconds = divmod(elapsed.seconds, 60)
+        return f"{minutes}m {seconds}s"
+    return "0m 0s"
+
+# Function to display file uploader for images
+def image_uploader():
+    uploaded_file = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
+    if uploaded_file is not None:
+        # Display the image
+        image_bytes = uploaded_file.getvalue()
+        encoded = base64.b64encode(image_bytes).decode()
+        st.markdown(f"<img src='data:image/png;base64,{encoded}' style='max-width:100%'>", unsafe_allow_html=True)
+
+        # Store in session state
+        if 'uploaded_images' not in st.session_state:
+            st.session_state.uploaded_images = []
+
+        st.session_state.uploaded_images.append({
+            "name": uploaded_file.name,
+            "data": encoded,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+        return True
+    return False
 
 # Main app
-st.set_page_config(page_title="Claude 3.7 Chat", layout="wide")
-
-# Sidebar navigation
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Chat", "History", "Search"])
-
-# Get API Key
-api_key = st.secrets["ANTHROPIC_API_KEY"]
-
-# Initialize chat model
-if "llm" not in st.session_state:
-    st.session_state.llm = ChatAnthropic(
-        anthropic_api_key=api_key,
-        model="claude-3-7-sonnet-20250219",  # Fixed model name
-        temperature=0.7,
-        max_tokens=32000  # Reduced max tokens to comply with model limits
+def main():
+    st.set_page_config(
+        page_title="SUPER AGI System",
+        page_icon="🧠",
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
 
-# Set up conversation
-if "conversation" not in st.session_state:
-    try:
-        memory = ConversationBufferMemory()
-        st.session_state.conversation = ConversationChain(
-            llm=st.session_state.llm, 
-            memory=memory,
-            verbose=True  # For debugging
-        )
-    except Exception as e:
-        st.error(f"Error initializing conversation: {str(e)}")
+    # Custom CSS
+    st.markdown("""
+    <style>
+        .main-header {
+            font-size: 2.5rem;
+            color: #4CAF50;
+        }
+        .sub-header {
+            font-size: 1.5rem;
+            color: #2196F3;
+        }
+        .success-text {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .failure-text {
+            color: #F44336;
+            font-weight: bold;
+        }
+        .thinking-indicator {
+            color: #FFC107;
+            font-weight: bold;
+            animation: blinker 1s linear infinite;
+        }
+        @keyframes blinker {
+            50% { opacity: 0.5; }
+        }
+        .elapsed-time {
+            color: #673AB7;
+            font-weight: bold;
+        }
+        .kill-button {
+            background-color: #F44336;
+            color: white;
+            font-weight: bold;
+            border-radius: 5px;
+            padding: 10px 20px;
+        }
+        .code-block {
+            background-color: #f5f5f5;
+            border-radius: 5px;
+            padding: 10px;
+            border-left: 5px solid #2196F3;
+            position: relative;
+        }
+        .copy-button {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Initialize state
-if "conversation_id" not in st.session_state:
-    st.session_state.conversation_id = str(uuid.uuid4())
-    
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.markdown('<p class="main-header">SUPER AGI System</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Goal-Oriented Agents with Backward Chaining</p>', unsafe_allow_html=True)
 
-# Chat page
-if page == "Chat":
-    st.title("Claude 3.7 Chat")
-    
-    # New chat button
-    if st.button("New Chat"):
-        if st.session_state.messages:
-            save_conversation(st.session_state.conversation_id, st.session_state.messages)
-        st.session_state.conversation_id = str(uuid.uuid4())
-        st.session_state.messages = []
-        try:
-            st.session_state.conversation = ConversationChain(
-                llm=st.session_state.llm, 
-                memory=ConversationBufferMemory()
-            )
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error creating new chat: {str(e)}")
-    
-    # Display messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-    
-    # Chat input
-    prompt = st.chat_input("Ask something...")
-    if prompt:
-        # Display user message
-        st.session_state.messages.append({"role": "human", "content": prompt})
-        with st.chat_message("human"):
-            st.write(prompt)
-        
-        # Get and display AI response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    response = st.session_state.conversation.predict(input=prompt)
-                    st.write(response)
-                    # Save AI message
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    # Auto-save
-                    save_conversation(st.session_state.conversation_id, st.session_state.messages)
-                except Exception as e:
-                    error_msg = f"Error: {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": f"⚠️ Error occurred: Please try again."})
+    # Sidebar for system control
+    with st.sidebar:
+        st.header("System Control")
+        if st.button("Initialize System"):
+            initialize_system()
 
-# History page
-elif page == "History":
-    st.title("Conversation History")
-    
-    conversations = get_conversations()
-    
-    if not conversations:
-        st.info("No saved conversations yet.")
-    else:
-        # Display conversations
-        for conv in conversations:
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write(f"**{conv['title']}**")
-                st.write(f"Last updated: {conv['updated_at']}")
-            with col2:
-                if st.button("Load", key=f"load_{conv['conversation_id']}"):
-                    try:
-                        # Load conversation
-                        loaded_messages = get_messages(conv['conversation_id'])
-                        formatted_messages = [
-                            {"role": msg["role"], "content": msg["content"]} 
-                            for msg in loaded_messages
-                        ]
-                        
-                        # Update state
-                        st.session_state.conversation_id = conv['conversation_id']
-                        st.session_state.messages = formatted_messages
-                        st.session_state.conversation = ConversationChain(
-                            llm=st.session_state.llm, 
-                            memory=ConversationBufferMemory()
-                        )
-                        
-                        # Go to chat page
-                        st.session_state.page = "Chat"
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error loading conversation: {str(e)}")
-            st.divider()
+        # Process control section
+        st.header("Process Control")
 
-# Search page
-elif page == "Search":
-    st.title("Search Conversations")
-    
-    query = st.text_input("Search for keywords:")
-    
-    if query:
-        try:
-            results = search_conversations(query)
-            
-            if not results:
-                st.info(f"No results found for '{query}'")
+        # Display status and elapsed time
+        if st.session_state.processing:
+            if st.session_state.thinking:
+                st.markdown('<p class="thinking-indicator">Thinking...</p>', unsafe_allow_html=True)
             else:
-                st.success(f"Found {len(results)} results")
-                
-                for result in results:
-                    with st.expander(f"{result['title']} - {result['updated_at']}"):
-                        st.write(f"**Content:** {result['content']}")
-                        if st.button("Load", key=f"load_search_{result['conversation_id']}"):
-                            try:
-                                # Load conversation
-                                loaded_messages = get_messages(result['conversation_id'])
-                                formatted_messages = [
-                                    {"role": msg["role"], "content": msg["content"]} 
-                                    for msg in loaded_messages
-                                ]
-                                
-                                # Update state
-                                st.session_state.conversation_id = result['conversation_id']
-                                st.session_state.messages = formatted_messages
-                                st.session_state.conversation = ConversationChain(
-                                    llm=st.session_state.llm, 
-                                    memory=ConversationBufferMemory()
-                                )
-                                
-                                # Go to chat page
-                                st.session_state.page = "Chat"
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error loading search result: {str(e)}")
-        except Exception as e:
-            st.error(f"Error searching conversations: {str(e)}")
+                st.markdown('<p class="success-text">Processing</p>', unsafe_allow_html=True)
 
-# Auto-save info
-st.sidebar.markdown("---")
-st.sidebar.info("💾 Your conversations are automatically saved.")
+            st.markdown(f'<p class="elapsed-time">Elapsed time: {get_elapsed_time()}</p>', unsafe_allow_html=True)
+
+            # Kill button
+            if st.button("Kill Process", key="kill_button"):
+                result = kill_process()
+                st.write(result)
+        else:
+            st.write("No active process")
+
+        # Settings section
+        st.header("Settings")
+        api_key = st.text_input("OpenAI API Key", type="password", 
+                               value=os.environ.get("OPENAI_API_KEY", ""))
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
+            add_log("API key updated")
+
+        # Image upload section
+        st.header("Image Upload")
+        image_uploader()
+
+    # Main area tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["Goal Input", "Execution Results", "System Logs", "Code Snippets"])
+
+    # Tab 1: Goal Input
+    with tab1:
+        st.header("Enter Your Goal")
+        goal_description = st.text_area("Goal Description", 
+                                       value="Research the latest treatments for AMD (Age-related Macular Degeneration)")
+
+        # Knowledge base input
+        st.subheader("Knowledge Base")
+        st.write("Enter comma-separated values for each category:")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            diseases = st.text_input("Diseases", value="AMD, diabetic retinopathy, glaucoma")
+            symptoms = st.text_input("Symptoms", value="vision loss, blurriness, distortion")
+            treatments = st.text_input("Treatments", value="medication, laser therapy, surgery, stem cell therapy")
+
+        with col2:
+            research_methods = st.text_input("Research Methods", value="clinical trials, lab experiments, genetic analysis")
+            causes = st.text_input("Causes", value="aging, genetics, smoking, high blood pressure")
+            resources = st.text_input("Resources", value="labs, funding, researchers")
+
+        # Build knowledge base
+        knowledge_base = {
+            "diseases": [item.strip() for item in diseases.split(",")],
+            "symptoms": [item.strip() for item in symptoms.split(",")],
+            "treatments": [item.strip() for item in treatments.split(",")],
+            "research_methods": [item.strip() for item in research_methods.split(",")],
+            "causes": [item.strip() for item in causes.split(",")],
+            "resources": [item.strip() for item in resources.split(",")]
+        }
+
+        # Process button
+        if st.button("Process Goal", disabled=st.session_state.processing):
+            process_goal(goal_description, knowledge_base)
+
+        # Processing indicator
+        if st.session_state.processing:
+            status_text = "Thinking..." if st.session_state.thinking else "Processing goal..."
+            st.info(f"{status_text} Elapsed time: {get_elapsed_time()}")
+            progress_bar = st.progress(0)
+
+            # This will be updated by a background thread
+            def update_progress():
+                progress = 0
+                while st.session_state.processing and progress < 100:
+                    # Simulate progress (in a real app, this would reflect actual progress)
+                    time.sleep(0.1)
+                    if st.session_state.thinking:
+                        # Pulse between 0-30% during thinking phase
+                        progress = (progress + 1) % 30
+                    else:
+                        # Steady progress during execution phase
+                        progress = min(progress + 1, 99)
+                    progress_bar.progress(progress)
+
+            threading.Thread(target=update_progress, daemon=True).start()
+
+    # Tab 2: Execution Results
+    with tab2:
+        st.header("Goal Execution Results")
+
+        if not st.session_state.goals:
+            st.info("No goals processed yet. Enter a goal in the 'Goal Input' tab.")
+        else:
+            # Main goal
+            main_goal = st.session_state.goals[0]
+            st.subheader(f"Main Goal: {main_goal.description}")
+
+            # Main goal status
+            status_color = {
+                "pending": "🟡",
+                "in_progress": "🔵",
+                "completed": "🟢",
+                "failed": "🔴"
+            }
+
+            st.write(f"Status: {status_color.get(main_goal.status.value, '⚪')} {main_goal.status.value.upper()}")
+
+            if main_goal.id in st.session_state.results:
+                result = st.session_state.results[main_goal.id]
+                st.write(f"Result: {'✅ Success' if result['success'] else '❌ Failed'}")
+                st.write(f"Message: {result['message']}")
+
+                # Display data if available
+                if result['data'] and 'execution_results' in result['data']:
+                    with st.expander("Execution Details"):
+                        for step_result in result['data']['execution_results']:
+                            st.write(f"Step {step_result['step']}: {step_result['description']}")
+                            st.json(step_result['result'])
+
+            # Sub-goals
+            st.subheader("Sub-Goals")
+            for sub_goal in st.session_state.goals[1:]:
+                with st.expander(f"{sub_goal.description} - {status_color.get(sub_goal.status.value, '⚪')} {sub_goal.status.value.upper()}"):
+                    st.write(f"Assigned to: {sub_goal.assigned_agent.name if sub_goal.assigned_agent else 'None'}")
+
+                    if sub_goal.id in st.session_state.results:
+                        result = st.session_state.results[sub_goal.id]
+                        st.write(f"Result: {'✅ Success' if result['success'] else '❌ Failed'}")
+                        st.write(f"Message: {result['message']}")
+
+                        # Display data if available
+                        if result['data'] and 'execution_results' in result['data']:
+                            st.write("Execution Steps:")
+                            for step_result in result['data']['execution_results']:
+                                st.write(f"- Step {step_result['step']}: {step_result['description']}")
+                                with st.expander("Step Details"):
+                                    st.json(step_result['result'])
+
+    # Tab 3: System Logs
+    with tab3:
+        st.header("System Logs")
+
+        # Log controls
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            auto_scroll = st.checkbox("Auto-scroll to latest logs", value=True)
+        with col2:
+            if st.button("Clear Logs"):
+                st.session_state.log_messages = []
+
+        # Display logs
+        log_container = st.container()
+        with log_container:
+            for log in st.session_state.log_messages:
+                st.text(log)
+
+    # Tab 4: Code Snippets
+    with tab4:
+        st.header("Useful Code Snippets")
+
+        # Code snippet 1: Kill Process
+        st.subheader("Kill Process Command")
+        code = "pkill -f 'python start.py'"
+        st.markdown(f"""
+        <div class="code-block">
+            <pre>{code}</pre>
+            <button class="copy-button" onclick="navigator.clipboard.writeText(`{code}`)">Copy</button>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Code snippet 2: Run focused implementation
+        st.subheader("Run Focused Implementation")
+        code = "cd ~/superagi && python focused_start.py"
+        st.markdown(f"""
+        <div class="code-block">
+            <pre>{code}</pre>
+            <button class="copy-button" onclick="navigator.clipboard.writeText(`{code}`)">Copy</button>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Code snippet 3: Check results
+        st.subheader("Check Results")
+        code = "cat ~/superagi/backward_chaining_implementation.py"
+        st.markdown(f"""
+        <div class="code-block">
+            <pre>{code}</pre>
+            <button class="copy-button" onclick="navigator.clipboard.writeText(`{code}`)">Copy</button>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Add a button to execute the command directly
+        if st.button("Execute Kill Command"):
+            result = subprocess.run(["pkill", "-f", "python start.py"], capture_output=True, text=True)
+            st.write("Command executed")
+            if result.stdout:
+                st.write(f"Output: {result.stdout}")
+            if result.stderr:
+                st.write(f"Error: {result.stderr}")
+
+if __name__ == "__main__":
+    main()
+EOF
