@@ -13,9 +13,9 @@ anthropic_api_key = st.secrets["ANTHROPIC_API_KEY"]
 # Initialize Anthropic Chat Model
 llm = ChatAnthropic(
     api_key=anthropic_api_key,
-    model="claude-3-7-sonnet-20250219",  # Using the specific model you requested
+    model="claude-3-7-sonnet-20250219",  # Specific model you requested
     temperature=0.7,
-    max_tokens=4000  # Set to avoid validation errors
+    max_tokens=4000  # Increased to 4000 for larger responses
 )
 
 # Set up Conversation Memory
