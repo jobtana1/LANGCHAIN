@@ -5,20 +5,20 @@ from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
 # Page config
-st.set_page_config(page_title="Claude Chat", layout="wide")
+st.set_page_config(page_title="Claude 3.7 Chat", layout="wide")
 
 # Get API Key
 api_key = st.secrets["ANTHROPIC_API_KEY"]
 
-# Try a simpler model initialization
+# Try the Claude 3.7 model initialization
 try:
     llm = ChatAnthropic(
         anthropic_api_key=api_key,  # Changed parameter name
-        model="claude-3-opus-20240229",  # Using a well-established model
+        model="claude-3-7-sonnet-20240229",  # Claude 3.7 model
         temperature=0.7,
         max_tokens=1000
     )
-    st.success("Model initialized successfully")
+    st.success("Claude 3.7 model initialized successfully")
 except Exception as e:
     st.error(f"Error initializing model: {type(e).__name__}")
     st.stop()
