@@ -1,10 +1,5 @@
 # Add these functions at the TOP of your existing app.py
 
-import tiktoken
-import sqlite3
-import json
-from datetime import datetime
-
 def num_tokens_from_messages(messages, model="claude-3-opus-20240229"):
     """Return the number of tokens used by a list of messages."""
     encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")  # Close enough for Claude
