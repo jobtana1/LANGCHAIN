@@ -1,9 +1,8 @@
 import streamlit as st
-import sqlite3
-import json
 from datetime import datetime
 from anthropic import Anthropic
 import pandas as pd
+import json
 
 st.set_page_config(page_title="Claude 3.7 Sonnet Chat", layout="wide")
 
@@ -35,21 +34,11 @@ def manage_context_window(messages, max_input_tokens=150000):
     
     return messages
 
-def save_conversation(messages, db_path="conversations.db", title=None):
-    """Save the current conversation to SQLite database."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Create table if it doesn't exist
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS conversations (
-        id INTEGER PRIMARY KEY,
-        title TEXT,
-        summary TEXT,
-        messages TEXT,
-        timestamp TEXT,
-        token_count INTEGER
-    )''')
+def save_conversation(messages, title=None):
+    """Save the current conversation to session state."""
+    # Initialize saved_conversations in session state if not present
+    if "saved_conversations" not in st.session_state:
+        st.session_state.saved_conversations = []
     
     # Generate title if not provided
     if not title:
@@ -66,35 +55,40 @@ def save_conversation(messages, db_path="conversations.db", title=None):
     last_assistant_msg = next((msg.get("content", "") for msg in reversed(messages) if msg.get("role") == "assistant"), "")
     summary = f"{first_user_msg[:100]}... → {last_assistant_msg[:100]}..."
     
-    # Save conversation
-    cursor.execute(
-        "INSERT INTO conversations (title, summary, messages, timestamp, token_count) VALUES (?, ?, ?, ?, ?)",
-        (title, summary, json.dumps(messages), datetime.now().isoformat(), num_tokens_from_messages(messages))
-    )
+    # Create new conversation record
+    conversation_id = len(st.session_state.saved_conversations)
+    conversation = {
+        "id": conversation_id,
+        "title": title,
+        "summary": summary,
+        "messages": messages.copy(),
+        "timestamp": datetime.now().isoformat(),
+        "token_count": num_tokens_from_messages(messages)
+    }
     
-    conn.commit()
-    conn.close()
-    return cursor.lastrowid
+    # Add to saved conversations
+    st.session_state.saved_conversations.append(conversation)
+    return conversation_id
 
-def get_conversation_list(db_path="conversations.db"):
+def get_conversation_list():
     """Get list of all saved conversations."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, title, summary, timestamp, token_count FROM conversations ORDER BY timestamp DESC")
-    conversations = cursor.fetchall()
-    conn.close()
-    return conversations
-
-def load_conversation(conversation_id, db_path="conversations.db"):
-    """Load a specific conversation by ID."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT messages FROM conversations WHERE id = ?", (conversation_id,))
-    result = cursor.fetchone()
-    conn.close()
+    if "saved_conversations" not in st.session_state:
+        st.session_state.saved_conversations = []
     
-    if result:
-        return json.loads(result[0])
+    return [
+        (conv["id"], conv["title"], conv["summary"], conv["timestamp"], conv["token_count"])
+        for conv in st.session_state.saved_conversations
+    ]
+
+def load_conversation(conversation_id):
+    """Load a specific conversation by ID."""
+    if "saved_conversations" not in st.session_state:
+        return []
+    
+    for conv in st.session_state.saved_conversations:
+        if conv["id"] == conversation_id:
+            return conv["messages"].copy()
+    
     return []
 
 def render_conversation_sidebar():
@@ -124,14 +118,31 @@ def render_conversation_sidebar():
         # Show saved conversations
         st.subheader("Saved Conversations")
         conversations = get_conversation_list()
-        for conv_id, title, summary, timestamp, token_count in conversations:
-            with st.expander(f"{title} ({timestamp[:10]})"):
-                st.write(f"Summary: {summary}")
-                st.write(f"Tokens: {token_count}")
-                if st.button(f"Load conversation #{conv_id}", key=f"load_{conv_id}"):
-                    st.session_state.messages = load_conversation(conv_id)
-                    st.experimental_rerun()
-
+        
+        # Display conversations or a message if none exist
+        if not conversations:
+            st.write("No saved conversations yet.")
+        else:
+            for conv_id, title, summary, timestamp, token_count in conversations:
+                with st.expander(f"{title} ({timestamp[:10]})"):
+                    st.write(f"Summary: {summary}")
+                    st.write(f"Tokens: {token_count}")
+                    if st.button(f"Load conversation #{conv_id}", key=f"load_{conv_id}"):
+                        st.session_state.messages = load_conversation(conv_id)
+                        st.experimental_rerun()
+        
+        # Export/Import section
+        st.subheader("Backup and Restore")
+        if st.button("Export All Conversations"):
+            if "saved_conversations" in st.session_state and st.session_state.saved_conversations:
+                export_data = json.dumps(st.session_state.saved_conversations)
+                st.download_button(
+                    label="Download JSON",
+                    data=export_data,
+                    file_name=f"claude_conversations_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
+                
 def main():
     st.title("Claude 3.7 Sonnet Chat")
     
