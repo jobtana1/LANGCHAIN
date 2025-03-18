@@ -1,4 +1,36 @@
-# Add these functions at the TOP of your existing app.py
+# Replace the existing tiktoken import and token counting functions with these:
+
+# import tiktoken  <- REMOVE THIS LINE
+import sqlite3
+import json
+from datetime import datetime
+
+def num_tokens_from_messages(messages, model="claude-3-opus-20240229"):
+    """Return an approximate number of tokens used by a list of messages."""
+    # Simple approximation: 1 token ≈ 4 characters for English text
+    num_tokens = 0
+    for message in messages:
+        num_tokens += 4  # message overhead
+        for key, value in message.items():
+            # Approximate token count by character count
+            num_tokens += len(str(value)) // 4
+    return num_tokens
+
+def manage_context_window(messages, max_input_tokens=150000):
+    """Ensure messages don't exceed token limit, trimming oldest if needed."""
+    current_tokens = num_tokens_from_messages(messages)
+    
+    while current_tokens > max_input_tokens and len(messages) > 1:
+        # Remove the oldest message (but keep system prompt if it's first)
+        if messages[0].get("role") == "system" and len(messages) > 2:
+            removed = messages.pop(1)  # Remove second message (first non-system)
+        else:
+            removed = messages.pop(0)  # Remove oldest message
+            
+        # Recalculate token count
+        current_tokens = num_tokens_from_messages(messages)
+    
+    return messages# Add these functions at the TOP of your existing app.py
 
 def num_tokens_from_messages(messages, model="claude-3-opus-20240229"):
     """Return the number of tokens used by a list of messages."""
