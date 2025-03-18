@@ -152,7 +152,7 @@ def main():
             with st.spinner("Thinking..."):
                 try:
                     response = client.messages.create(
-                        model="claude-3-7-sonnet-20240320",
+                        model="claude-3-7-sonnet-20250219",
                         max_tokens=4000,
                         system=st.session_state.system_prompt,
                         messages=st.session_state.messages
