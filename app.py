@@ -1,11 +1,14 @@
-# Replace the existing tiktoken import and token counting functions with these:
-
-# import tiktoken  <- REMOVE THIS LINE
+import streamlit as st
 import sqlite3
 import json
 from datetime import datetime
+from anthropic import Anthropic
+import pandas as pd
 
-def num_tokens_from_messages(messages, model="claude-3-opus-20240229"):
+st.set_page_config(page_title="Claude 3.7 Sonnet Chat", layout="wide")
+
+# Simple token counting function
+def num_tokens_from_messages(messages):
     """Return an approximate number of tokens used by a list of messages."""
     # Simple approximation: 1 token ≈ 4 characters for English text
     num_tokens = 0
@@ -14,32 +17,6 @@ def num_tokens_from_messages(messages, model="claude-3-opus-20240229"):
         for key, value in message.items():
             # Approximate token count by character count
             num_tokens += len(str(value)) // 4
-    return num_tokens
-
-def manage_context_window(messages, max_input_tokens=150000):
-    """Ensure messages don't exceed token limit, trimming oldest if needed."""
-    current_tokens = num_tokens_from_messages(messages)
-    
-    while current_tokens > max_input_tokens and len(messages) > 1:
-        # Remove the oldest message (but keep system prompt if it's first)
-        if messages[0].get("role") == "system" and len(messages) > 2:
-            removed = messages.pop(1)  # Remove second message (first non-system)
-        else:
-            removed = messages.pop(0)  # Remove oldest message
-            
-        # Recalculate token count
-        current_tokens = num_tokens_from_messages(messages)
-    
-    return messages# Add these functions at the TOP of your existing app.py
-
-def num_tokens_from_messages(messages, model="claude-3-opus-20240229"):
-    """Return the number of tokens used by a list of messages."""
-    encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")  # Close enough for Claude
-    num_tokens = 0
-    for message in messages:
-        num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
-        for key, value in message.items():
-            num_tokens += len(encoding.encode(str(value)))
     return num_tokens
 
 def manage_context_window(messages, max_input_tokens=150000):
@@ -120,7 +97,6 @@ def load_conversation(conversation_id, db_path="conversations.db"):
         return json.loads(result[0])
     return []
 
-# ADD THIS FUNCTION in your app.py (not in main)
 def render_conversation_sidebar():
     with st.sidebar:
         st.header("Conversation Management")
@@ -140,9 +116,10 @@ def render_conversation_sidebar():
                 save_conversation(st.session_state.messages)
             
             # Clear session state except for system messages
-            system_messages = [msg for msg in st.session_state.messages if msg["role"] == "system"]
-            st.session_state.messages = system_messages
-            st.experimental_rerun()
+            if "messages" in st.session_state:
+                system_messages = [msg for msg in st.session_state.messages if msg["role"] == "system"]
+                st.session_state.messages = system_messages
+                st.experimental_rerun()
         
         # Show saved conversations
         st.subheader("Saved Conversations")
@@ -154,3 +131,61 @@ def render_conversation_sidebar():
                 if st.button(f"Load conversation #{conv_id}", key=f"load_{conv_id}"):
                     st.session_state.messages = load_conversation(conv_id)
                     st.experimental_rerun()
+
+def main():
+    st.title("Claude 3.7 Sonnet Chat")
+    
+    # Initialize the Anthropic client with API key from Streamlit secrets
+    client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+    
+    # Initialize messages in session state if not already present
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {"role": "system", "content": "You are Claude, a helpful AI assistant created by Anthropic. You are friendly, respectful, and you want to be as useful as possible."}
+        ]
+    
+    # Add conversation management
+    render_conversation_sidebar()
+    
+    # Auto-save every 10 messages
+    if "messages" in st.session_state and len(st.session_state.messages) % 10 == 0 and len(st.session_state.messages) > 1:
+        save_conversation(st.session_state.messages, 
+                        title=f"Auto-saved {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    
+    # Apply token window management before sending to API
+    if "messages" in st.session_state and len(st.session_state.messages) > 0:
+        st.session_state.messages = manage_context_window(st.session_state.messages)
+    
+    # Display chat messages
+    for message in st.session_state.messages:
+        if message["role"] != "system":  # Don't display system messages
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+    
+    # Chat input for user
+    if prompt := st.chat_input("Type your message here..."):
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.write(prompt)
+        
+        # Get Claude's response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = client.messages.create(
+                    model="claude-3-7-sonnet-20240320",
+                    max_tokens=4000,
+                    messages=st.session_state.messages
+                )
+                assistant_response = response.content[0].text
+                
+                # Display the response
+                st.write(assistant_response)
+        
+        # Add Claude's response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+
+if __name__ == "__main__":
+    main()
