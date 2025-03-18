@@ -177,7 +177,10 @@ def main():
     # Initialize messages in session state if not already present
     if "messages" not in st.session_state:
         st.session_state.messages = []
-    
+    # ADD THE FIX HERE
+# Clean any system messages from existing conversation
+if "messages" in st.session_state:
+    st.session_state.messages = [msg for msg in st.session_state.messages if msg.get("role") != "system"]
     # Add conversation management
     render_conversation_sidebar()
     
