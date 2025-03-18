@@ -36,14 +36,33 @@ def trim_conversation(messages, max_tokens=150000):
 # Conversation management functions
 def save_conversation(title=None):
     """Save current conversation to session state"""
+    if not st.session_state.messages:
+        return None  # Don't save empty conversations
+        
+    # Generate title from first user message if not provided
     if not title:
-        title = f"Conversation {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        first_user_msg = next((msg["content"] for msg in st.session_state.messages 
+                             if msg["role"] == "user"), "")
+        
+        # Create a short title from the first user message
+        if first_user_msg:
+            short_title = first_user_msg[:30] + "..." if len(first_user_msg) > 30 else first_user_msg
+            title = f"{short_title} - {datetime.now().strftime('%m/%d %H:%M')}"
+        else:
+            title = f"Chat {datetime.now().strftime('%m/%d %H:%M')}"
         
     conv_id = len(st.session_state.saved_conversations)
     
-    # Create summary
-    first_msg = st.session_state.messages[0]["content"][:100] if st.session_state.messages else ""
-    summary = f"{first_msg}..."
+    # Create better summary
+    first_msg = next((msg["content"][:50] for msg in st.session_state.messages 
+                     if msg["role"] == "user"), "")
+    last_msg = next((msg["content"][:50] for msg in reversed(st.session_state.messages) 
+                    if msg["role"] == "assistant"), "")
+    
+    if first_msg and last_msg:
+        summary = f"{first_msg}... → {last_msg}..."
+    else:
+        summary = f"{first_msg or last_msg}..."
     
     # Save conversation data
     conversation = {
@@ -86,7 +105,7 @@ def sidebar_ui():
         with col1:
             if st.button("New Chat"):
                 st.session_state.messages = []
-                st.experimental_rerun()
+                st.rerun()
                 
         with col2:
             if st.button("Save Chat"):
@@ -100,9 +119,12 @@ def sidebar_ui():
             st.write("No saved conversations")
         else:
             for conv in st.session_state.saved_conversations:
-                if st.button(f"{conv['title']} ({conv['timestamp'][:10]})", key=f"load_{conv['id']}"):
-                    load_conversation(conv["id"])
-                    st.experimental_rerun()
+                with st.expander(f"{conv['title']}"):
+                    st.write(f"Created: {conv['timestamp'][:10]}")
+                    st.write(f"Summary: {conv.get('summary', '')}")
+                    if st.button(f"Load", key=f"load_{conv['id']}"):
+                        load_conversation(conv["id"])
+                        st.rerun()
         
         # Export functionality            
         if st.button("Export All Chats"):
@@ -166,9 +188,16 @@ def main():
                     # Add response to chat history
                     st.session_state.messages.append({"role": "assistant", "content": assistant_response})
                     
-                    # Auto-save every 10 messages
-                    if len(st.session_state.messages) % 10 == 0:
-                        save_conversation(f"Auto-saved {datetime.now().strftime('%H:%M')}")
+                    # Auto-save every 5 messages or if it's a significant response
+                    should_save = (
+                        len(st.session_state.messages) % 5 == 0 or 
+                        len(assistant_response) > 1000
+                    )
+                    
+                    if should_save:
+                        save_id = save_conversation()
+                        if save_id is not None:
+                            st.toast(f"Conversation auto-saved", icon="💾")
                     
                 except Exception as e:
                     st.error(f"API Error: {str(e)}")
