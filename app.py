@@ -142,12 +142,29 @@ def render_conversation_sidebar():
                     file_name=f"claude_conversations_{datetime.now().strftime('%Y%m%d')}.json",
                     mime="application/json"
                 )
-                
+
 def main():
     st.title("Claude 3.7 Sonnet Chat")
     
-    # Initialize the Anthropic client with API key from Streamlit secrets
-    client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+    # Check for API key in secrets
+    if "ANTHROPIC_API_KEY" not in st.secrets:
+        st.error("Error: API key not found in secrets. Please add your Anthropic API key to the Streamlit secrets.")
+        st.info("Go to your Streamlit app settings, find the 'Secrets' section, and add: ANTHROPIC_API_KEY = 'your-api-key'")
+        return
+    
+    # Display API key status
+    api_key = st.secrets["ANTHROPIC_API_KEY"]
+    if not api_key or api_key.startswith("sk-ant-"):
+        st.success("API key detected")
+    else:
+        st.warning("Your API key doesn't look like a valid Anthropic key. It should start with 'sk-ant-'")
+    
+    # Initialize the Anthropic client
+    try:
+        client = Anthropic(api_key=api_key)
+    except Exception as e:
+        st.error(f"Error initializing Anthropic client: {str(e)}")
+        return
     
     # Initialize messages in session state if not already present
     if "messages" not in st.session_state:
@@ -185,18 +202,39 @@ def main():
         # Get Claude's response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response = client.messages.create(
-                    model="claude-3-7-sonnet-20240320",
-                    max_tokens=4000,
-                    messages=st.session_state.messages
-                )
-                assistant_response = response.content[0].text
-                
-                # Display the response
-                st.write(assistant_response)
-        
-        # Add Claude's response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                try:
+                    # Try with the latest model
+                    try:
+                        response = client.messages.create(
+                            model="claude-3-7-sonnet-20240320",
+                            max_tokens=4000,
+                            messages=st.session_state.messages
+                        )
+                        assistant_response = response.content[0].text
+                    except Exception as e:
+                        # If that fails, try with an alternative model name
+                        st.warning("Trying alternative model name...")
+                        response = client.messages.create(
+                            model="claude-3-7-sonnet-20240305",
+                            max_tokens=4000,
+                            messages=st.session_state.messages
+                        )
+                        assistant_response = response.content[0].text
+                    
+                    # Display the response
+                    st.write(assistant_response)
+                    
+                    # Add Claude's response to chat history
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                    
+                except Exception as e:
+                    error_message = str(e)
+                    st.error(f"Error from Claude API: {error_message}")
+                    st.info("This might be an issue with your API key or model access. Please check your Anthropic account.")
+                    
+                    # Add error message to chat history to keep the conversation coherent
+                    error_response = "I apologize, but I encountered an error while processing your request. Please try again or check your API configuration."
+                    st.session_state.messages.append({"role": "assistant", "content": error_response})
 
 if __name__ == "__main__":
     main()
