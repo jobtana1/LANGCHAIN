@@ -1,4 +1,76 @@
-import streamlit as st
+# Au début du script, ajoutez :
+import sys
+import traceback
+
+# Modification de la fonction principale
+def main():
+    st.title("Claude 3.7 Sonnet Chat")
+
+    # Tentative de chargement des conversations sauvegardées AVANT toute opération
+    try:
+        # Chargement explicite des conversations
+        if not st.session_state.saved_conversations:
+            st.session_state.saved_conversations = load_saved_conversations()
+    except Exception as e:
+        st.error(f"Erreur de chargement initial : {e}")
+
+    try:
+        client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+
+        # Sauvegarde systématique avant chaque opération critique
+        save_conversations_to_file()
+
+        # Reste du code...
+
+        if prompt := st.chat_input("Type your message here..."):
+            # Sauvegarde avant chaque nouvel message
+            save_conversation(force_file_save=True)
+
+            st.session_state.messages.append({"role": "user", "content": prompt})
+
+            # Code existant...
+
+    except Exception as e:
+        # Gestion d'erreur détaillée
+        st.error(f"Erreur critique : {e}")
+        
+        # Trace complète de l'erreur
+        error_details = traceback.format_exc()
+        st.error(error_details)
+        
+        # Sauvegarde des conversations même en cas d'erreur
+        save_conversations_to_file()
+
+        # Option de redémarrage
+        if st.button("Redémarrer l'application"):
+            st.experimental_rerun()
+
+# Ajout d'un gestionnaire de session global
+def init_session_state():
+    # Initialisation sécurisée des états de session
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    if "saved_conversations" not in st.session_state:
+        st.session_state.saved_conversations = load_saved_conversations() or []
+    
+    if "system_prompt" not in st.session_state:
+        st.session_state.system_prompt = "You are Claude, a helpful AI assistant created by Anthropic."
+
+# Modification du point d'entrée
+if __name__ == "__main__":
+    try:
+        # Initialisation sécurisée
+        init_session_state()
+        
+        # Sauvegarde initiale
+        save_conversations_to_file()
+        
+        # Lancement principal
+        main()
+    except Exception as e:
+        st.error(f"Erreur de démarrage : {e}")
+        traceback.print_exc()import streamlit as st
 from anthropic import Anthropic
 import json
 from datetime import datetime
