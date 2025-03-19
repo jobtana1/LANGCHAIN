@@ -2,6 +2,8 @@ import streamlit as st
 from anthropic import Anthropic
 import json
 from datetime import datetime
+import time
+import random
 
 # Page configuration
 st.set_page_config(page_title="Claude 3.7 Chat", layout="wide")
@@ -36,6 +38,45 @@ def trim_conversation(messages, max_tokens=150000):
         # Remove oldest message
         messages.pop(0)
     return messages
+
+# Fonction pour appeler Claude avec retry et backoff exponentiel
+def get_claude_response_with_retry(client, model, max_tokens, system, messages, max_retries=5):
+    """
+    Appelle l'API Claude avec retry et backoff exponentiel
+    """
+    retry_count = 0
+    base_wait_time = 2  # temps d'attente initial en secondes
+    
+    while retry_count < max_retries:
+        try:
+            # Tentative d'appel à l'API
+            response = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages
+            )
+            return response
+            
+        except Exception as e:
+            error_message = str(e)
+            # Si c'est une erreur de surcharge ou une autre erreur temporaire
+            if "overloaded_error" in error_message or "529" in error_message:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    # Levez l'exception si nous avons épuisé toutes les tentatives
+                    raise e
+                
+                # Calcul du temps d'attente avec jitter (variation aléatoire)
+                wait_time = base_wait_time * (2 ** (retry_count - 1)) + random.uniform(0, 1)
+                st.warning(f"API surchargée. Nouvelle tentative dans {wait_time:.1f} secondes... ({retry_count}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                # Pour les autres types d'erreurs, ne pas réessayer
+                raise e
+    
+    # Si on arrive ici, c'est que toutes les tentatives ont échoué
+    raise Exception("Impossible de contacter l'API après plusieurs tentatives")
 
 # Conversation management functions
 def save_conversation(title=None):
@@ -177,11 +218,14 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    response = client.messages.create(
+                    # Utilisez la fonction avec retry
+                    response = get_claude_response_with_retry(
+                        client=client,
                         model="claude-3-7-sonnet-20250219",
                         max_tokens=4000,
                         system=st.session_state.system_prompt,
-                        messages=st.session_state.messages
+                        messages=st.session_state.messages,
+                        max_retries=5  # Vous pouvez ajuster ce nombre
                     )
                     
                     assistant_response = response.content[0].text
@@ -203,8 +247,8 @@ def main():
                         # Sauvegarde basée sur la taille de la réponse
                         len(assistant_response) > 1000
                     ) and (
-                        # Assurez-vous qu'au moins 2 minutes se sont écoulées depuis la dernière sauvegarde
-                        time_since_last_save > 120  # 120 secondes = 2 minutes
+                        # Assurez-vous qu'au moins 10 minutes se sont écoulées depuis la dernière sauvegarde
+                        time_since_last_save > 600  # 600 secondes = 10 minutes
                     )
                     
                     if should_save:
