@@ -4,52 +4,67 @@ import json
 from datetime import datetime
 import time
 import random
+import os
+
+# Fichier de sauvegarde permanent
+SAVE_FILE = "claude_conversations_backup.json"
 
 # Page configuration
 st.set_page_config(page_title="Claude 3.7 Chat", layout="wide")
 
-# Initialize session state variables
+# Charger conversations du fichier
+def load_saved_conversations():
+    try:
+        if os.path.exists(SAVE_FILE):
+            with open(SAVE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        st.error(f"Erreur chargement: {str(e)}")
+        return []
+
+# Sauvegarder conversations dans fichier
+def save_conversations_to_file():
+    try:
+        with open(SAVE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(st.session_state.saved_conversations, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"Erreur sauvegarde: {str(e)}")
+        return False
+
+# Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    
+
 if "system_prompt" not in st.session_state:
     st.session_state.system_prompt = "You are Claude, a helpful AI assistant created by Anthropic."
-    
-if "saved_conversations" not in st.session_state:
-    st.session_state.saved_conversations = []
 
-# Ajout du contrôle de temps pour les sauvegardes
+if "saved_conversations" not in st.session_state:
+    st.session_state.saved_conversations = load_saved_conversations()
+
 if "last_save_time" not in st.session_state:
     st.session_state.last_save_time = datetime.now()
 
 # Token management functions
 def count_tokens(messages, system_prompt):
-    """Simple token counter (approximation)"""
-    # Approximation: 1 token ≈ 4 characters
     total_chars = len(system_prompt)
     for msg in messages:
         total_chars += len(str(msg.get("content", "")))
     return total_chars // 4
 
 def trim_conversation(messages, max_tokens=150000):
-    """Trim conversation if it gets too long"""
-    # Calculate approximate tokens
     while count_tokens(messages, st.session_state.system_prompt) > max_tokens and len(messages) > 1:
-        # Remove oldest message
         messages.pop(0)
     return messages
 
-# Fonction pour appeler Claude avec retry et backoff exponentiel
+# API avec retry
 def get_claude_response_with_retry(client, model, max_tokens, system, messages, max_retries=5):
-    """
-    Appelle l'API Claude avec retry et backoff exponentiel
-    """
     retry_count = 0
-    base_wait_time = 2  # temps d'attente initial en secondes
-    
+    base_wait_time = 2
+
     while retry_count < max_retries:
         try:
-            # Tentative d'appel à l'API
             response = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
@@ -57,73 +72,78 @@ def get_claude_response_with_retry(client, model, max_tokens, system, messages, 
                 messages=messages
             )
             return response
-            
+
         except Exception as e:
             error_message = str(e)
-            # Si c'est une erreur de surcharge ou une autre erreur temporaire
             if "overloaded_error" in error_message or "529" in error_message:
                 retry_count += 1
                 if retry_count >= max_retries:
-                    # Levez l'exception si nous avons épuisé toutes les tentatives
                     raise e
-                
-                # Calcul du temps d'attente avec jitter (variation aléatoire)
+
                 wait_time = base_wait_time * (2 ** (retry_count - 1)) + random.uniform(0, 1)
-                st.warning(f"API surchargée. Nouvelle tentative dans {wait_time:.1f} secondes... ({retry_count}/{max_retries})")
+                st.warning(f"API surchargée. Nouvelle tentative dans {wait_time:.1f}s... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
             else:
-                # Pour les autres types d'erreurs, ne pas réessayer
                 raise e
-    
-    # Si on arrive ici, c'est que toutes les tentatives ont échoué
+
     raise Exception("Impossible de contacter l'API après plusieurs tentatives")
 
-# Conversation management functions
-def save_conversation(title=None):
-    """Save current conversation to session state"""
+# Gestion des conversations
+def save_conversation(title=None, force_file_save=False):
     if not st.session_state.messages:
-        return None  # Don't save empty conversations
-        
-    # Generate title from first user message if not provided
+        return None
+
     if not title:
         first_user_msg = next((msg["content"] for msg in st.session_state.messages 
                              if msg["role"] == "user"), "")
-        
-        # Create a short title from the first user message
+
         if first_user_msg:
             short_title = first_user_msg[:30] + "..." if len(first_user_msg) > 30 else first_user_msg
             title = f"{short_title} - {datetime.now().strftime('%m/%d %H:%M')}"
         else:
             title = f"Chat {datetime.now().strftime('%m/%d %H:%M')}"
-        
-    conv_id = len(st.session_state.saved_conversations)
-    
-    # Create better summary
-    first_msg = next((msg["content"][:50] for msg in st.session_state.messages 
-                     if msg["role"] == "user"), "")
-    last_msg = next((msg["content"][:50] for msg in reversed(st.session_state.messages) 
-                    if msg["role"] == "assistant"), "")
-    
-    if first_msg and last_msg:
-        summary = f"{first_msg}... → {last_msg}..."
+
+    # Vérifier si conversation similaire existe déjà
+    existing_conv_id = None
+    for i, conv in enumerate(st.session_state.saved_conversations):
+        if (len(conv["messages"]) == len(st.session_state.messages) and
+            all(a.get("content") == b.get("content") for a, b in zip(conv["messages"], st.session_state.messages))):
+            existing_conv_id = conv["id"]
+            st.session_state.saved_conversations[i]["timestamp"] = datetime.now().isoformat()
+            break
+
+    if existing_conv_id is None:
+        conv_id = max([conv.get("id", -1) for conv in st.session_state.saved_conversations], default=-1) + 1
+
+        first_msg = next((msg["content"][:50] for msg in st.session_state.messages 
+                         if msg["role"] == "user"), "")
+        last_msg = next((msg["content"][:50] for msg in reversed(st.session_state.messages) 
+                        if msg["role"] == "assistant"), "")
+
+        if first_msg and last_msg:
+            summary = f"{first_msg}... → {last_msg}..."
+        else:
+            summary = f"{first_msg or last_msg}..."
+
+        conversation = {
+            "id": conv_id,
+            "title": title,
+            "messages": st.session_state.messages.copy(),
+            "system_prompt": st.session_state.system_prompt,
+            "timestamp": datetime.now().isoformat(),
+            "summary": summary
+        }
+
+        st.session_state.saved_conversations.append(conversation)
     else:
-        summary = f"{first_msg or last_msg}..."
-    
-    # Save conversation data
-    conversation = {
-        "id": conv_id,
-        "title": title,
-        "messages": st.session_state.messages.copy(),
-        "system_prompt": st.session_state.system_prompt,
-        "timestamp": datetime.now().isoformat(),
-        "summary": summary
-    }
-    
-    st.session_state.saved_conversations.append(conversation)
+        conv_id = existing_conv_id
+
+    if force_file_save:
+        save_conversations_to_file()
+
     return conv_id
 
 def load_conversation(conv_id):
-    """Load a saved conversation"""
     for conv in st.session_state.saved_conversations:
         if conv["id"] == conv_id:
             st.session_state.messages = conv["messages"].copy()
@@ -131,50 +151,73 @@ def load_conversation(conv_id):
             return True
     return False
 
-# UI components
+# UI sidebar
 def sidebar_ui():
-    """Render the sidebar UI"""
     with st.sidebar:
         st.title("Chat Settings")
-        
-        # System prompt editor
+
         st.subheader("System Prompt")
         new_prompt = st.text_area("Edit", st.session_state.system_prompt, height=100)
         if new_prompt != st.session_state.system_prompt:
             st.session_state.system_prompt = new_prompt
-            
-        # Conversation management
+
         st.subheader("Conversation")
         col1, col2 = st.columns(2)
-        
+
         with col1:
             if st.button("New Chat"):
+                if st.session_state.messages:
+                    save_id = save_conversation(force_file_save=True)
+                    if save_id is not None:
+                        st.toast(f"Conversation sauvegardée (ID: {save_id})", icon="💾")
+
                 st.session_state.messages = []
                 st.rerun()
-                
+
         with col2:
             if st.button("Save Chat"):
                 title = st.text_input("Title:", f"Chat {datetime.now().strftime('%H:%M')}")
-                save_id = save_conversation(title)
-                st.success(f"Saved #{save_id}")
-                
-        # Saved conversations
+                save_id = save_conversation(title, force_file_save=True)
+                if save_id is not None:
+                    st.success(f"Sauvegardé #{save_id}")
+
+        if st.button("Forcer sauvegarde"):
+            if save_conversations_to_file():
+                st.success("Conversations sauvegardées dans fichier")
+
         st.subheader("Saved Chats")
         if not st.session_state.saved_conversations:
             st.write("No saved conversations")
         else:
-            for conv in st.session_state.saved_conversations:
+            sorted_convs = sorted(
+                st.session_state.saved_conversations, 
+                key=lambda x: x.get("timestamp", ""), 
+                reverse=True
+            )
+
+            for conv in sorted_convs:
                 with st.expander(f"{conv['title']}"):
-                    st.write(f"Created: {conv['timestamp'][:10]}")
+                    st.write(f"Created: {conv['timestamp'][:16].replace('T', ' ')}")
                     st.write(f"Summary: {conv.get('summary', '')}")
-                    if st.button(f"Load", key=f"load_{conv['id']}"):
-                        load_conversation(conv["id"])
-                        st.rerun()
-        
-        # Export functionality            
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(f"Load", key=f"load_{conv['id']}"):
+                            if st.session_state.messages:
+                                save_conversation(force_file_save=True)
+
+                            load_conversation(conv["id"])
+                            st.rerun()
+                    with col2:
+                        if st.button(f"Delete", key=f"del_{conv['id']}"):
+                            st.session_state.saved_conversations = [
+                                c for c in st.session_state.saved_conversations if c["id"] != conv["id"]
+                            ]
+                            save_conversations_to_file()
+                            st.rerun()
+
         if st.button("Export All Chats"):
             if st.session_state.saved_conversations:
-                export_data = json.dumps(st.session_state.saved_conversations)
+                export_data = json.dumps(st.session_state.saved_conversations, ensure_ascii=False, indent=2)
                 st.download_button(
                     "Download JSON",
                     export_data,
@@ -182,84 +225,87 @@ def sidebar_ui():
                     mime="application/json"
                 )
 
+        st.subheader("Import Chats")
+        uploaded_file = st.file_uploader("Upload JSON", type="json")
+        if uploaded_file is not None:
+            try:
+                imported_data = json.loads(uploaded_file.read())
+                if isinstance(imported_data, list):
+                    existing_ids = {conv["id"] for conv in st.session_state.saved_conversations}
+                    new_convs = [conv for conv in imported_data if conv["id"] not in existing_ids]
+
+                    if new_convs:
+                        st.session_state.saved_conversations.extend(new_convs)
+                        save_conversations_to_file()
+                        st.success(f"Importé {len(new_convs)} conversations")
+                        st.rerun()
+                    else:
+                        st.info("Aucune nouvelle conversation")
+                else:
+                    st.error("Format incorrect")
+            except Exception as e:
+                st.error(f"Erreur import: {str(e)}")
+
 def main():
-    # Main title
     st.title("Claude 3.7 Sonnet Chat")
-    
-    # Initialize Anthropic client
+
     try:
         client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-    except Exception as e:
-        st.error(f"API Key Error: {str(e)}")
-        st.info("Please add your Anthropic API key to Streamlit secrets.")
-        return
-        
-    # Render sidebar
-    sidebar_ui()
-    
-    # Trim conversation if needed
-    st.session_state.messages = trim_conversation(st.session_state.messages)
-    
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-    
-    # Chat input
-    if prompt := st.chat_input("Type your message here..."):
-        # Add user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-        
-        # Get Claude's response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    # Utilisez la fonction avec retry
-                    response = get_claude_response_with_retry(
-                        client=client,
-                        model="claude-3-7-sonnet-20250219",
-                        max_tokens=4000,
-                        system=st.session_state.system_prompt,
-                        messages=st.session_state.messages,
-                        max_retries=5  # Vous pouvez ajuster ce nombre
-                    )
-                    
-                    assistant_response = response.content[0].text
-                    
-                    # Display the response
-                    st.write(assistant_response)
-                    
-                    # Add response to chat history
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                    # Version corrigée de la logique d'auto-sauvegarde avec contrôle de temps
-                    # Calculez le temps écoulé depuis la dernière sauvegarde
-                    time_since_last_save = (datetime.now() - st.session_state.last_save_time).total_seconds()
-                    
-                    should_save = (
-                        # Sauvegarde basée sur le nombre de messages
-                        (len(st.session_state.messages) % 5 == 0 and 
-                         len(st.session_state.messages) > 0) or 
-                        # Sauvegarde basée sur la taille de la réponse
-                        len(assistant_response) > 1000
-                    ) and (
-                        # Assurez-vous qu'au moins 10 minutes se sont écoulées depuis la dernière sauvegarde
-                        time_since_last_save > 600  # 600 secondes = 10 minutes
-                    )
-                    
-                    if should_save:
-                        save_id = save_conversation()
-                        if save_id is not None:
-                            st.toast(f"Conversation auto-saved", icon="💾")
-                            # Mettez à jour le timestamp de la dernière sauvegarde
-                            st.session_state.last_save_time = datetime.now()
-                    
-                except Exception as e:
-                    st.error(f"API Error: {str(e)}")
+
+        sidebar_ui()
+
+        st.session_state.messages = trim_conversation(st.session_state.messages)
+
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+
+        if prompt := st.chat_input("Type your message here..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+
+            with st.chat_message("user"):
+                st.write(prompt)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        # Sauvegarde avant API call
+                        temp_save_id = save_conversation(title=f"TEMP_{datetime.now().strftime('%H%M%S')}")
+
+                        response = get_claude_response_with_retry(
+                            client=client,
+                            model="claude-3-7-sonnet-20250219",
+                            max_tokens=4000,
+                            system=st.session_state.system_prompt,
+                            messages=st.session_state.messages,
+                            max_retries=5
+                        )
+
+                        assistant_response = response.content[0].text
+
+                        st.write(assistant_response)
+
+                        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+
+                        # Sauvegarde périodique
+                        time_since_last_save = (datetime.now() - st.session_state.last_save_time).total_seconds()
+
+                        should_save = (
+                            (len(st.session_state.messages) % 4 == 0) or 
+                            len(assistant_response) > 800 or
+                            time_since_last_save > 300  # 5 minutes
+                        )
+
+                        if should_save:
+                            save_id = save_conversation(force_file_save=True)
+                            if save_id is not None:
+                                st.toast(f"Auto-sauvegardé", icon="💾")
+                                st.session_state.last_save_time = datetime.now()
+
+                    except Exception as e:
+                        st.error(f"API Error: {str(e)}")
+                        # Auto-sauvegarde en cas d'erreur
+                        save_conversations_to_file()
 
 if __name__ == "__main__":
     main()
