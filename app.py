@@ -16,6 +16,10 @@ if "system_prompt" not in st.session_state:
 if "saved_conversations" not in st.session_state:
     st.session_state.saved_conversations = []
 
+# Ajout du contrôle de temps pour les sauvegardes
+if "last_save_time" not in st.session_state:
+    st.session_state.last_save_time = datetime.now()
+
 # Token management functions
 def count_tokens(messages, system_prompt):
     """Simple token counter (approximation)"""
@@ -188,16 +192,27 @@ def main():
                     # Add response to chat history
                     st.session_state.messages.append({"role": "assistant", "content": assistant_response})
                     
-                    # Auto-save every 5 messages or if it's a significant response
+                    # Version corrigée de la logique d'auto-sauvegarde avec contrôle de temps
+                    # Calculez le temps écoulé depuis la dernière sauvegarde
+                    time_since_last_save = (datetime.now() - st.session_state.last_save_time).total_seconds()
+                    
                     should_save = (
-                        len(st.session_state.messages) % 5 == 0 or 
+                        # Sauvegarde basée sur le nombre de messages
+                        (len(st.session_state.messages) % 5 == 0 and 
+                         len(st.session_state.messages) > 0) or 
+                        # Sauvegarde basée sur la taille de la réponse
                         len(assistant_response) > 1000
+                    ) and (
+                        # Assurez-vous qu'au moins 2 minutes se sont écoulées depuis la dernière sauvegarde
+                        time_since_last_save > 120  # 120 secondes = 2 minutes
                     )
                     
                     if should_save:
                         save_id = save_conversation()
                         if save_id is not None:
                             st.toast(f"Conversation auto-saved", icon="💾")
+                            # Mettez à jour le timestamp de la dernière sauvegarde
+                            st.session_state.last_save_time = datetime.now()
                     
                 except Exception as e:
                     st.error(f"API Error: {str(e)}")
