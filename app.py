@@ -286,7 +286,7 @@ def main():
                     try:
                         response = get_claude_response_with_retry(
                             client=client,
-                            model="claude-3-sonnet-20240229",
+                            model="claude-3-7-sonnet-20250219",
                             max_tokens=4000,
                             system=st.session_state.system_prompt,
                             messages=st.session_state.messages,
